@@ -1,0 +1,331 @@
+import pandas as pd
+import numpy as np
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.feature_extraction.text import TfidfVectorizer
+import warnings
+warnings.filterwarnings('ignore')
+
+# ============================================================================
+# LOAD CLEANED DATA
+# ============================================================================
+
+print("=" * 70)
+print("FITNESS PROGRAM RECOMMENDATION SYSTEM")
+print("=" * 70)
+
+df = pd.read_csv('../Data/fitness_dataset_cleaned.csv')
+print(f"\nLoaded {len(df)} workout programs")
+
+# ============================================================================
+# RECOMMENDATION SYSTEM CLASS
+# ============================================================================
+
+class FitnessRecommender:
+    """
+    Content-based recommendation system for fitness programs
+    Uses multiple similarity metrics to provide personalized recommendations
+    """
+    
+    def __init__(self, dataframe):
+        self.df = dataframe.copy()
+        self.feature_columns = []
+        self.similarity_matrix = None
+        self.scaler = StandardScaler()
+        
+    def prepare_features(self):
+        """Prepare feature matrix for similarity calculation"""
+        print("\n" + "=" * 70)
+        print("PREPARING FEATURES FOR RECOMMENDATION")
+        print("=" * 70)
+        
+        # Select numerical features
+        numerical_features = [
+            'equipment_encoded', 
+            'program_length', 
+            'time_per_workout',
+            'total_exercises',
+            'num_levels',
+            'num_goals',
+            'total_program_hours',
+            'exercises_per_week'
+        ]
+        
+        # Select binary level features
+        level_features = [col for col in self.df.columns if col.startswith('level_')]
+        
+        # Select binary goal features
+        goal_features = [col for col in self.df.columns if col.startswith('goal_')]
+        
+        # Combine all features
+        self.feature_columns = numerical_features + level_features + goal_features
+        
+        print(f"✓ Selected {len(numerical_features)} numerical features")
+        print(f"✓ Selected {len(level_features)} level features")
+        print(f"✓ Selected {len(goal_features)} goal features")
+        print(f"✓ Total features: {len(self.feature_columns)}")
+        
+        # Extract feature matrix
+        feature_matrix = self.df[self.feature_columns].values
+        
+        # Standardize numerical features for fair comparison
+        feature_matrix_scaled = self.scaler.fit_transform(feature_matrix)
+        
+        return feature_matrix_scaled
+    
+    def calculate_similarity(self):
+        """Calculate cosine similarity between all programs"""
+        print("\n" + "=" * 70)
+        print("CALCULATING SIMILARITY MATRIX")
+        print("=" * 70)
+        
+        feature_matrix = self.prepare_features()
+        self.similarity_matrix = cosine_similarity(feature_matrix)
+        
+        print(f"✓ Calculated similarity for {len(self.df)} x {len(self.df)} programs")
+        print(f"✓ Similarity matrix shape: {self.similarity_matrix.shape}")
+        
+    def get_recommendations_by_index(self, program_idx, n_recommendations=5):
+        """
+        Get recommendations based on program index
+        
+        Args:
+            program_idx: Index of the program to base recommendations on
+            n_recommendations: Number of recommendations to return
+        """
+        if self.similarity_matrix is None:
+            self.calculate_similarity()
+        
+        # Get similarity scores for this program
+        sim_scores = list(enumerate(self.similarity_matrix[program_idx]))
+        
+        # Sort by similarity (excluding the program itself)
+        sim_scores = sorted(sim_scores, key=lambda x: x[1], reverse=True)
+        sim_scores = sim_scores[1:n_recommendations+1]  # Exclude self
+        
+        # Get program indices
+        program_indices = [i[0] for i in sim_scores]
+        similarity_scores = [i[1] for i in sim_scores]
+        
+        # Create recommendations dataframe
+        recommendations = self.df.iloc[program_indices].copy()
+        recommendations['similarity_score'] = similarity_scores
+        
+        return recommendations
+    
+    def get_recommendations_by_title(self, title_substring, n_recommendations=5):
+        """
+        Get recommendations based on program title
+        
+        Args:
+            title_substring: Substring to search in program titles
+            n_recommendations: Number of recommendations to return
+        """
+        # Find matching programs
+        matches = self.df[self.df['title'].str.contains(title_substring, case=False, na=False)]
+        
+        if len(matches) == 0:
+            print(f"No programs found matching '{title_substring}'")
+            return None
+        
+        # Use the first match
+        program_idx = matches.index[0]
+        program_title = matches.iloc[0]['title']
+        
+        print(f"\nFound program: '{program_title}'")
+        
+        return self.get_recommendations_by_index(program_idx, n_recommendations)
+    
+    def get_recommendations_by_criteria(self, 
+                                       equipment=None,
+                                       goals=None, 
+                                       levels=None,
+                                       max_time=None,
+                                       max_length=None,
+                                       n_recommendations=10):
+        """
+        Get recommendations based on user-specified criteria
+        
+        Args:
+            equipment: Equipment type (e.g., 'Full Gym', 'At Home')
+            goals: List of fitness goals
+            levels: List of fitness levels
+            max_time: Maximum time per workout (minutes)
+            max_length: Maximum program length (weeks)
+            n_recommendations: Number of recommendations to return
+        """
+        print("\n" + "=" * 70)
+        print("FILTERING BY CRITERIA")
+        print("=" * 70)
+        
+        filtered_df = self.df.copy()
+        
+        # Filter by equipment
+        if equipment:
+            filtered_df = filtered_df[filtered_df['equipment'] == equipment]
+            print(f"✓ Equipment: {equipment} ({len(filtered_df)} programs)")
+        
+        # Filter by maximum time per workout
+        if max_time:
+            filtered_df = filtered_df[filtered_df['time_per_workout'] <= max_time]
+            print(f"✓ Max time per workout: {max_time} min ({len(filtered_df)} programs)")
+        
+        # Filter by maximum program length
+        if max_length:
+            filtered_df = filtered_df[filtered_df['program_length'] <= max_length]
+            print(f"✓ Max program length: {max_length} weeks ({len(filtered_df)} programs)")
+        
+        # Filter by goals (at least one goal must match)
+        if goals:
+            goal_columns = [f'goal_{goal.lower().replace(" ", "_").replace("&", "and")}' 
+                          for goal in goals]
+            # Check if columns exist
+            valid_goal_cols = [col for col in goal_columns if col in filtered_df.columns]
+            if valid_goal_cols:
+                filtered_df = filtered_df[filtered_df[valid_goal_cols].sum(axis=1) > 0]
+                print(f"✓ Goals: {', '.join(goals)} ({len(filtered_df)} programs)")
+        
+        # Filter by levels (at least one level must match)
+        if levels:
+            level_columns = [f'level_{level.lower()}' for level in levels]
+            # Check if columns exist
+            valid_level_cols = [col for col in level_columns if col in filtered_df.columns]
+            if valid_level_cols:
+                filtered_df = filtered_df[filtered_df[valid_level_cols].sum(axis=1) > 0]
+                print(f"✓ Levels: {', '.join(levels)} ({len(filtered_df)} programs)")
+        
+        if len(filtered_df) == 0:
+            print("\n⚠ No programs match your criteria. Try relaxing some filters.")
+            return None
+        
+        # Sort by popularity (days since creation - newer is better)
+        # and total exercises (more comprehensive programs)
+        filtered_df = filtered_df.sort_values(
+            by=['days_since_creation', 'total_exercises'], 
+            ascending=[True, False]
+        )
+        
+        # Return top N recommendations
+        recommendations = filtered_df.head(n_recommendations)
+        
+        print(f"\n✓ Returning top {len(recommendations)} recommendations")
+        
+        return recommendations
+    
+    def display_recommendations(self, recommendations, base_program=None):
+        """Display recommendations in a user-friendly format"""
+        if recommendations is None or len(recommendations) == 0:
+            print("\nNo recommendations to display.")
+            return
+        
+        print("\n" + "=" * 70)
+        if base_program:
+            print(f"RECOMMENDATIONS BASED ON: {base_program}")
+        else:
+            print("RECOMMENDED PROGRAMS")
+        print("=" * 70)
+        
+        for idx, row in recommendations.iterrows():
+            print(f"\n[{idx}] {row['title']}")
+            print(f"    Equipment: {row['equipment']}")
+            print(f"    Length: {row['program_length']:.0f} weeks | "
+                  f"Time/Workout: {row['time_per_workout']:.0f} min | "
+                  f"Total Exercises: {row['total_exercises']}")
+            
+            # Parse and display levels
+            if 'level_list' in row:
+                levels = eval(row['level_list']) if isinstance(row['level_list'], str) else row['level_list']
+                print(f"    Levels: {', '.join(levels)}")
+            
+            # Parse and display goals
+            if 'goal_list' in row:
+                goals = eval(row['goal_list']) if isinstance(row['goal_list'], str) else row['goal_list']
+                print(f"    Goals: {', '.join(goals)}")
+            
+            # Show similarity score if available
+            if 'similarity_score' in row:
+                print(f"    Similarity: {row['similarity_score']:.2%}")
+            
+            # Show description preview
+            desc = row['description'][:150] + "..." if len(row['description']) > 150 else row['description']
+            print(f"    Description: {desc}")
+        
+        print("\n" + "=" * 70)
+
+# ============================================================================
+# INITIALIZE RECOMMENDER
+# ============================================================================
+
+print("\nInitializing recommendation system...")
+recommender = FitnessRecommender(df)
+recommender.calculate_similarity()
+
+print("\n✓ Recommendation system ready!")
+
+# ============================================================================
+# EXAMPLE USAGE 1: Recommend Similar Programs
+# ============================================================================
+
+print("\n" + "=" * 70)
+print("EXAMPLE 1: FIND SIMILAR PROGRAMS")
+print("=" * 70)
+
+# Find programs similar to a specific one
+sample_title = df.iloc[0]['title']
+print(f"\nSearching for programs similar to: '{sample_title}'")
+
+recommendations = recommender.get_recommendations_by_index(0, n_recommendations=5)
+recommender.display_recommendations(recommendations, base_program=sample_title)
+
+# ============================================================================
+# EXAMPLE USAGE 2: Recommend by Criteria
+# ============================================================================
+
+print("\n" + "=" * 70)
+print("EXAMPLE 2: RECOMMEND BY USER CRITERIA")
+print("=" * 70)
+
+print("\nScenario: Beginner looking for bodybuilding at home, max 60 min/workout")
+
+recommendations = recommender.get_recommendations_by_criteria(
+    equipment='At Home',
+    goals=['Bodybuilding'],
+    levels=['Beginner'],
+    max_time=60,
+    max_length=12,
+    n_recommendations=5
+)
+
+recommender.display_recommendations(recommendations)
+
+# ============================================================================
+# EXAMPLE USAGE 3: Search by Title
+# ============================================================================
+
+print("\n" + "=" * 70)
+print("EXAMPLE 3: SEARCH BY TITLE KEYWORD")
+print("=" * 70)
+
+recommendations = recommender.get_recommendations_by_title('powerlifting', n_recommendations=5)
+if recommendations is not None:
+    recommender.display_recommendations(recommendations)
+
+# ============================================================================
+# SAVE RECOMMENDER FOR LATER USE
+# ============================================================================
+
+print("\n" + "=" * 70)
+print("SAVING RECOMMENDATION SYSTEM")
+print("=" * 70)
+
+# Save similarity matrix for later use
+np.save('similarity_matrix.npy', recommender.similarity_matrix)
+print("✓ Saved similarity matrix to 'similarity_matrix.npy'")
+
+print("\n" + "=" * 70)
+print("RECOMMENDATION SYSTEM READY FOR USE!")
+print("=" * 70)
+print("\nYou can now use the recommender object to get personalized recommendations:")
+print("  - recommender.get_recommendations_by_index(idx, n)")
+print("  - recommender.get_recommendations_by_title('keyword', n)")
+print("  - recommender.get_recommendations_by_criteria(...)")
