@@ -14,8 +14,31 @@ print("=" * 70)
 print("FITNESS PROGRAM RECOMMENDATION SYSTEM")
 print("=" * 70)
 
-df = pd.read_csv('../Data/fitness_dataset_cleaned.csv')
-print(f"\nLoaded {len(df)} workout programs")
+# Try multiple possible file paths
+import os
+
+possible_paths = [
+    'fitness_dataset_cleaned.csv',
+    '../Data/fitness_dataset_cleaned.csv',
+    './Data/fitness_dataset_cleaned.csv',
+    'Data/fitness_dataset_cleaned.csv'
+]
+
+df = None
+for path in possible_paths:
+    if os.path.exists(path):
+        df = pd.read_csv(path)
+        print(f"\n✓ Loaded {len(df)} workout programs from: {path}")
+        break
+
+if df is None:
+    print("\n⚠ Could not find 'fitness_dataset_cleaned.csv'")
+    print("Please make sure you've run the data cleaning script first.")
+    print("\nSearching current directory...")
+    csv_files = [f for f in os.listdir('.') if f.endswith('.csv')]
+    if csv_files:
+        print(f"Found CSV files: {', '.join(csv_files)}")
+    raise FileNotFoundError("fitness_dataset_cleaned.csv not found")
 
 # ============================================================================
 # RECOMMENDATION SYSTEM CLASS
@@ -32,6 +55,17 @@ class FitnessRecommender:
         self.feature_columns = []
         self.similarity_matrix = None
         self.scaler = StandardScaler()
+        
+        # Parse list columns if they're still strings
+        import ast
+        if 'level_list' in self.df.columns and isinstance(self.df['level_list'].iloc[0], str):
+            self.df['level_list'] = self.df['level_list'].apply(
+                lambda x: ast.literal_eval(x) if pd.notna(x) and x != '[]' else []
+            )
+        if 'goal_list' in self.df.columns and isinstance(self.df['goal_list'].iloc[0], str):
+            self.df['goal_list'] = self.df['goal_list'].apply(
+                lambda x: ast.literal_eval(x) if pd.notna(x) and x != '[]' else []
+            )
         
     def prepare_features(self):
         """Prepare feature matrix for similarity calculation"""
@@ -57,16 +91,64 @@ class FitnessRecommender:
         # Select binary goal features
         goal_features = [col for col in self.df.columns if col.startswith('goal_')]
         
-        # Combine all features
-        self.feature_columns = numerical_features + level_features + goal_features
+        # Combine all features (only use columns that exist and are numeric)
+        self.feature_columns = []
         
-        print(f"✓ Selected {len(numerical_features)} numerical features")
-        print(f"✓ Selected {len(level_features)} level features")
-        print(f"✓ Selected {len(goal_features)} goal features")
+        # Add numerical features that exist and are actually numeric
+        for feat in numerical_features:
+            if feat in self.df.columns:
+                # Check if column is numeric or can be converted to numeric
+                try:
+                    pd.to_numeric(self.df[feat], errors='coerce')
+                    self.feature_columns.append(feat)
+                except:
+                    print(f"  ⚠ Skipping {feat} - not numeric")
+        
+        # Add level features that exist
+        for feat in level_features:
+            if feat in self.df.columns:
+                self.feature_columns.append(feat)
+        
+        # Add goal features that exist
+        for feat in goal_features:
+            if feat in self.df.columns:
+                self.feature_columns.append(feat)
+        
+        print(f"✓ Selected {len([f for f in self.feature_columns if f in numerical_features])} numerical features")
+        print(f"✓ Selected {len([f for f in self.feature_columns if f.startswith('level_')])} level features")
+        print(f"✓ Selected {len([f for f in self.feature_columns if f.startswith('goal_')])} goal features")
         print(f"✓ Total features: {len(self.feature_columns)}")
         
         # Extract feature matrix
-        feature_matrix = self.df[self.feature_columns].values
+        feature_df = self.df[self.feature_columns].copy()
+        
+        # Debug: Check for any problematic columns
+        print("\nChecking data types...")
+        for col in self.feature_columns:
+            sample_val = feature_df[col].iloc[0]
+            if isinstance(sample_val, (list, tuple)):
+                print(f"  ⚠ WARNING: {col} contains lists/tuples: {sample_val}")
+            
+            # Convert all to numeric, coercing errors to NaN
+            feature_df[col] = pd.to_numeric(feature_df[col], errors='coerce')
+        
+        # Fill any NaN values with 0
+        feature_df = feature_df.fillna(0)
+        
+        print("✓ All features converted to numeric")
+        
+        # Convert to numpy array
+        try:
+            feature_matrix = feature_df.values.astype(float)
+        except Exception as e:
+            print(f"\n⚠ Error converting to array: {e}")
+            print("Problematic columns:")
+            for col in feature_df.columns:
+                try:
+                    feature_df[col].values.astype(float)
+                except:
+                    print(f"  - {col}: {feature_df[col].iloc[0]}")
+            raise
         
         # Standardize numerical features for fair comparison
         feature_matrix_scaled = self.scaler.fit_transform(feature_matrix)
